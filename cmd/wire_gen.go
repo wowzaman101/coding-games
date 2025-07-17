@@ -32,17 +32,25 @@ type dependencies struct {
 }
 
 func main() {
+	// Initialize dependencies
 	d := initialize()
-	log.Printf("Server is running on port %s", config.Get().Server.Port)
+	cfg := config.Get()
 
+	log.Printf("Starting coding-games server on port %s", cfg.Server.Port)
+
+	// Set up graceful shutdown
 	defer func() {
+		log.Println("Shutting down server...")
 		if err := d.server.Shutdown(); err != nil {
-			log.Printf("Error during shutdown: %s", err.Error())
+			log.Printf("Error during server shutdown: %v", err)
+		} else {
+			log.Println("Server gracefully stopped")
 		}
-		log.Println("Server gracefully stopped")
 	}()
 
-	if err := d.server.Listen(":" + config.Get().Server.Port); err != nil {
-		log.Fatalf("Failed to start server: %s", err.Error())
+	// Start the server
+	serverAddr := ":" + cfg.Server.Port
+	if err := d.server.Listen(serverAddr); err != nil {
+		log.Fatalf("Failed to start server on %s: %v", serverAddr, err)
 	}
 }
