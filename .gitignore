@@ -16,9 +16,13 @@
 coverage.*
 *.coverprofile
 profile.cov
+cover.html
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Build artifacts
+main
+
+# Dependency directories
+vendor/
 
 # Go workspace file
 go.work

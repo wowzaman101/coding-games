@@ -7,6 +7,9 @@ import (
 	"coding-games/config"
 	"coding-games/infrastructure/server"
 	"coding-games/internal/handler/gamehdl"
+	"coding-games/internal/handler/leaderboardhdl"
+	"coding-games/internal/handler/playerhdl"
+	"coding-games/internal/storage"
 	"log"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,8 +22,11 @@ type dependencies struct {
 
 func initialize() *dependencies {
 	wire.Build(
-		server.New,
+		storage.NewInMemoryStorage,
 		gamehdl.New,
+		playerhdl.New,
+		leaderboardhdl.New,
+		server.New,
 		wire.Struct(new(dependencies), "server"),
 	)
 	return nil

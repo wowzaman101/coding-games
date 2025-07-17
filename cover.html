@@ -61,7 +61,13 @@
 				
 				<option value="file2">coding-games/infrastructure/server/server.go (0.0%)</option>
 				
-				<option value="file3">coding-games/internal/handler/gamehdl/game.go (0.0%)</option>
+				<option value="file3">coding-games/internal/handler/gamehdl/game.go (49.4%)</option>
+				
+				<option value="file4">coding-games/internal/handler/leaderboardhdl/leaderboard.go (0.0%)</option>
+				
+				<option value="file5">coding-games/internal/handler/playerhdl/player.go (54.7%)</option>
+				
+				<option value="file6">coding-games/internal/storage/storage.go (0.0%)</option>
 				
 				</select>
 			</div>
@@ -96,6 +102,9 @@ import (
         "coding-games/config"
         "coding-games/infrastructure/server"
         "coding-games/internal/handler/gamehdl"
+        "coding-games/internal/handler/leaderboardhdl"
+        "coding-games/internal/handler/playerhdl"
+        "coding-games/internal/storage"
         "github.com/gofiber/fiber/v3"
         "log"
 )
@@ -103,8 +112,11 @@ import (
 // Injectors from main.go:
 
 func initialize() *dependencies <span class="cov0" title="0">{
-        handler := gamehdl.New()
-        app := server.New(handler)
+        storageStorage := storage.NewInMemoryStorage()
+        handler := gamehdl.New(storageStorage)
+        playerhdlHandler := playerhdl.New(storageStorage)
+        leaderboardhdlHandler := leaderboardhdl.New(storageStorage)
+        app := server.New(handler, playerhdlHandler, leaderboardhdlHandler)
         mainDependencies := &amp;dependencies{
                 server: app,
         }
@@ -173,20 +185,63 @@ func Get() Config <span class="cov0" title="0">{
 
 import (
         "coding-games/internal/handler/gamehdl"
+        "coding-games/internal/handler/leaderboardhdl"
+        "coding-games/internal/handler/playerhdl"
 
         "github.com/gofiber/fiber/v3"
 )
 
-func New(gh gamehdl.Handler) *fiber.App <span class="cov0" title="0">{
+func New(gh gamehdl.Handler, ph playerhdl.Handler, lh leaderboardhdl.Handler) *fiber.App <span class="cov0" title="0">{
+        app := fiber.New(fiber.Config{
+                ErrorHandler: func(ctx fiber.Ctx, err error) error </span><span class="cov0" title="0">{
+                        code := fiber.StatusInternalServerError
+                        if e, ok := err.(*fiber.Error); ok </span><span class="cov0" title="0">{
+                                code = e.Code
+                        }</span>
+                        <span class="cov0" title="0">return ctx.Status(code).JSON(fiber.Map{
+                                "error":   "internal_error",
+                                "message": err.Error(),
+                                "code":    code,
+                        })</span>
+                },
+        })
 
-        app := fiber.New()
         // Health check route
-        app.Get("/health", func(c fiber.Ctx) error </span><span class="cov0" title="0">{
-                return c.SendString("OK")
+        <span class="cov0" title="0">app.Get("/health", func(c fiber.Ctx) error </span><span class="cov0" title="0">{
+                return c.JSON(fiber.Map{
+                        "status":  "ok",
+                        "message": "Coding Games API is running",
+                })
         }</span>)
 
-        // Game handler route
-        <span class="cov0" title="0">app.Get("/game/test", gh.Test)
+        // API v1 routes
+        <span class="cov0" title="0">api := app.Group("/api/v1")
+
+        // Game routes
+        games := api.Group("/games")
+        games.Get("/", gh.ListGames)           // GET /api/v1/games
+        games.Post("/", gh.CreateGame)         // POST /api/v1/games
+        games.Get("/:id", gh.GetGame)          // GET /api/v1/games/:id
+        games.Put("/:id", gh.UpdateGame)       // PUT /api/v1/games/:id
+        games.Delete("/:id", gh.DeleteGame)    // DELETE /api/v1/games/:id
+
+        // Player routes
+        players := api.Group("/players")
+        players.Get("/", ph.ListPlayers)                    // GET /api/v1/players
+        players.Post("/", ph.CreatePlayer)                  // POST /api/v1/players
+        players.Get("/:id", ph.GetPlayer)                   // GET /api/v1/players/:id
+        players.Put("/:id", ph.UpdatePlayer)                // PUT /api/v1/players/:id
+        players.Delete("/:id", ph.DeletePlayer)             // DELETE /api/v1/players/:id
+        players.Post("/:id/scores", ph.SubmitScore)         // POST /api/v1/players/:id/scores
+        players.Get("/:id/scores", ph.GetPlayerScores)      // GET /api/v1/players/:id/scores
+
+        // Leaderboard routes
+        leaderboard := api.Group("/leaderboards")
+        leaderboard.Get("/global", lh.GetGlobalLeaderboard)         // GET /api/v1/leaderboards/global
+        leaderboard.Get("/games/:gameId", lh.GetGameLeaderboard)    // GET /api/v1/leaderboards/games/:gameId
+
+        // Legacy routes for backward compatibility
+        app.Get("/game/test", gh.Test)
 
         return app</span>
 }
@@ -194,27 +249,932 @@ func New(gh gamehdl.Handler) *fiber.App <span class="cov0" title="0">{
 		
 		<pre class="file" id="file3" style="display: none">package gamehdl
 
-import "github.com/gofiber/fiber/v3"
+import (
+        "coding-games/internal/model"
+        "coding-games/internal/storage"
+        "fmt"
+        "strconv"
+        "time"
+
+        "github.com/gofiber/fiber/v3"
+        "github.com/google/uuid"
+)
 
 type handler struct {
+        storage storage.Storage
 }
 
 type Handler interface {
         Test(ctx fiber.Ctx) error
+        ListGames(ctx fiber.Ctx) error
+        GetGame(ctx fiber.Ctx) error
+        CreateGame(ctx fiber.Ctx) error
+        UpdateGame(ctx fiber.Ctx) error
+        DeleteGame(ctx fiber.Ctx) error
 }
 
-func New() Handler <span class="cov0" title="0">{
-        return &amp;handler{}
+func New(storage storage.Storage) Handler <span class="cov7" title="4">{
+        return &amp;handler{
+                storage: storage,
+        }
 }</span>
 
 func (h *handler) Test(ctx fiber.Ctx) error <span class="cov0" title="0">{
-        // Example handler logic
-        // This could be replaced with actual game logic
         return ctx.JSON(fiber.Map{
                 "message": "Test endpoint hit",
+                "time":    time.Now(),
         })
 }</span>
+
+func (h *handler) ListGames(ctx fiber.Ctx) error <span class="cov6" title="3">{
+        // Get query parameters for filtering
+        difficulty := ctx.Query("difficulty")
+        language := ctx.Query("language")
+        limitStr := ctx.Query("limit", "10")
+        offsetStr := ctx.Query("offset", "0")
+
+        limit, err := strconv.Atoi(limitStr)
+        if err != nil || limit &lt;= 0 </span><span class="cov0" title="0">{
+                limit = 10
+        }</span>
+        
+        <span class="cov6" title="3">offset, err := strconv.Atoi(offsetStr)
+        if err != nil || offset &lt; 0 </span><span class="cov0" title="0">{
+                offset = 0
+        }</span>
+
+        <span class="cov6" title="3">var games []model.Game
+        for _, game := range h.storage.GetGames() </span><span class="cov10" title="6">{
+                // Apply filters
+                if difficulty != "" &amp;&amp; game.Difficulty != difficulty </span><span class="cov1" title="1">{
+                        continue</span>
+                }
+                <span class="cov9" title="5">if language != "" &amp;&amp; game.Language != language </span><span class="cov1" title="1">{
+                        continue</span>
+                }
+                <span class="cov7" title="4">games = append(games, *game)</span>
+        }
+
+        // Apply pagination
+        <span class="cov6" title="3">total := len(games)
+        start := offset
+        end := offset + limit
+        if start &gt; total </span><span class="cov0" title="0">{
+                start = total
+        }</span>
+        <span class="cov6" title="3">if end &gt; total </span><span class="cov6" title="3">{
+                end = total
+        }</span>
+
+        <span class="cov6" title="3">paginatedGames := games[start:end]
+
+        return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
+                "games":  paginatedGames,
+                "total":  total,
+                "limit":  limit,
+                "offset": offset,
+        })</span>
+}
+
+func (h *handler) GetGame(ctx fiber.Ctx) error <span class="cov4" title="2">{
+        gameID := ctx.Params("id")
+        if gameID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Game ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov4" title="2">game, exists := h.storage.GetGames()[gameID]
+        if !exists </span><span class="cov1" title="1">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Game not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov1" title="1">return ctx.Status(fiber.StatusOK).JSON(game)</span>
+}
+
+func (h *handler) CreateGame(ctx fiber.Ctx) error <span class="cov4" title="2">{
+        var req model.CreateGameRequest
+        if err := ctx.Bind().Body(&amp;req); err != nil </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Invalid request body",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Basic validation
+        <span class="cov4" title="2">if req.Title == "" || req.Description == "" || req.Difficulty == "" || req.Language == "" || req.MaxScore &lt;= 0 </span><span class="cov1" title="1">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "validation_error",
+                        Message: "All fields are required and max_score must be positive",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Validate difficulty
+        <span class="cov1" title="1">if req.Difficulty != "easy" &amp;&amp; req.Difficulty != "medium" &amp;&amp; req.Difficulty != "hard" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "validation_error",
+                        Message: "Difficulty must be one of: easy, medium, hard",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov1" title="1">gameID := uuid.New().String()
+        now := time.Now()
+        
+        game := &amp;model.Game{
+                ID:          gameID,
+                Title:       req.Title,
+                Description: req.Description,
+                Difficulty:  req.Difficulty,
+                Language:    req.Language,
+                MaxScore:    req.MaxScore,
+                CreatedAt:   now,
+                UpdatedAt:   now,
+        }
+
+        h.storage.GetGames()[gameID] = game
+
+        return ctx.Status(fiber.StatusCreated).JSON(game)</span>
+}
+
+func (h *handler) UpdateGame(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        gameID := ctx.Params("id")
+        if gameID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Game ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">game, exists := h.storage.GetGames()[gameID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Game not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov0" title="0">var req model.UpdateGameRequest
+        if err := ctx.Bind().Body(&amp;req); err != nil </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Invalid request body",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Update fields if provided
+        <span class="cov0" title="0">if req.Title != nil </span><span class="cov0" title="0">{
+                game.Title = *req.Title
+        }</span>
+        <span class="cov0" title="0">if req.Description != nil </span><span class="cov0" title="0">{
+                game.Description = *req.Description
+        }</span>
+        <span class="cov0" title="0">if req.Difficulty != nil </span><span class="cov0" title="0">{
+                if *req.Difficulty != "easy" &amp;&amp; *req.Difficulty != "medium" &amp;&amp; *req.Difficulty != "hard" </span><span class="cov0" title="0">{
+                        return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                                Error:   "validation_error",
+                                Message: "Difficulty must be one of: easy, medium, hard",
+                                Code:    fiber.StatusBadRequest,
+                        })
+                }</span>
+                <span class="cov0" title="0">game.Difficulty = *req.Difficulty</span>
+        }
+        <span class="cov0" title="0">if req.Language != nil </span><span class="cov0" title="0">{
+                game.Language = *req.Language
+        }</span>
+        <span class="cov0" title="0">if req.MaxScore != nil </span><span class="cov0" title="0">{
+                if *req.MaxScore &lt;= 0 </span><span class="cov0" title="0">{
+                        return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                                Error:   "validation_error",
+                                Message: "max_score must be positive",
+                                Code:    fiber.StatusBadRequest,
+                        })
+                }</span>
+                <span class="cov0" title="0">game.MaxScore = *req.MaxScore</span>
+        }
+
+        <span class="cov0" title="0">game.UpdatedAt = time.Now()
+        h.storage.GetGames()[gameID] = game
+
+        return ctx.Status(fiber.StatusOK).JSON(game)</span>
+}
+
+func (h *handler) DeleteGame(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        gameID := ctx.Params("id")
+        if gameID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Game ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">_, exists := h.storage.GetGames()[gameID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Game not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov0" title="0">delete(h.storage.GetGames(), gameID)
+
+        return ctx.Status(fiber.StatusOK).JSON(model.SuccessResponse{
+                Message: fmt.Sprintf("Game %s deleted successfully", gameID),
+        })</span>
+}
 </pre>
+		
+		<pre class="file" id="file4" style="display: none">package leaderboardhdl
+
+import (
+        "coding-games/internal/model"
+        "coding-games/internal/storage"
+        "sort"
+        "strconv"
+
+        "github.com/gofiber/fiber/v3"
+)
+
+type handler struct {
+        storage storage.Storage
+}
+
+type Handler interface {
+        GetGlobalLeaderboard(ctx fiber.Ctx) error
+        GetGameLeaderboard(ctx fiber.Ctx) error
+}
+
+func New(storage storage.Storage) Handler <span class="cov0" title="0">{
+        return &amp;handler{
+                storage: storage,
+        }
+}</span>
+
+func (h *handler) GetGlobalLeaderboard(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        limitStr := ctx.Query("limit", "10")
+        offsetStr := ctx.Query("offset", "0")
+
+        limit, err := strconv.Atoi(limitStr)
+        if err != nil || limit &lt;= 0 </span><span class="cov0" title="0">{
+                limit = 10
+        }</span>
+        
+        <span class="cov0" title="0">offset, err := strconv.Atoi(offsetStr)
+        if err != nil || offset &lt; 0 </span><span class="cov0" title="0">{
+                offset = 0
+        }</span>
+
+        <span class="cov0" title="0">var entries []model.LeaderboardEntry
+        for _, player := range h.storage.GetPlayers() </span><span class="cov0" title="0">{
+                entries = append(entries, model.LeaderboardEntry{
+                        PlayerID: player.ID,
+                        Username: player.Username,
+                        Score:    player.TotalScore,
+                })
+        }</span>
+
+        // Sort by total score (descending)
+        <span class="cov0" title="0">sort.Slice(entries, func(i, j int) bool </span><span class="cov0" title="0">{
+                return entries[i].Score &gt; entries[j].Score
+        }</span>)
+
+        // Assign ranks
+        <span class="cov0" title="0">for i := range entries </span><span class="cov0" title="0">{
+                entries[i].Rank = i + 1
+        }</span>
+
+        // Apply pagination
+        <span class="cov0" title="0">total := len(entries)
+        start := offset
+        end := offset + limit
+        if start &gt; total </span><span class="cov0" title="0">{
+                start = total
+        }</span>
+        <span class="cov0" title="0">if end &gt; total </span><span class="cov0" title="0">{
+                end = total
+        }</span>
+
+        <span class="cov0" title="0">paginatedEntries := entries[start:end]
+
+        return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
+                "leaderboard": model.Leaderboard{
+                        GameID:  "global",
+                        Entries: paginatedEntries,
+                },
+                "total":  total,
+                "limit":  limit,
+                "offset": offset,
+        })</span>
+}
+
+func (h *handler) GetGameLeaderboard(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        gameID := ctx.Params("gameId")
+        if gameID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Game ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">limitStr := ctx.Query("limit", "10")
+        offsetStr := ctx.Query("offset", "0")
+
+        limit, err := strconv.Atoi(limitStr)
+        if err != nil || limit &lt;= 0 </span><span class="cov0" title="0">{
+                limit = 10
+        }</span>
+        
+        <span class="cov0" title="0">offset, err := strconv.Atoi(offsetStr)
+        if err != nil || offset &lt; 0 </span><span class="cov0" title="0">{
+                offset = 0
+        }</span>
+
+        // Collect scores for the specific game
+        <span class="cov0" title="0">gameScores := make(map[string]int) // playerID -&gt; best score
+        for playerID, scores := range h.storage.GetPlayerScores() </span><span class="cov0" title="0">{
+                bestScore := 0
+                for _, score := range scores </span><span class="cov0" title="0">{
+                        if score.GameID == gameID &amp;&amp; score.Score &gt; bestScore </span><span class="cov0" title="0">{
+                                bestScore = score.Score
+                        }</span>
+                }
+                <span class="cov0" title="0">if bestScore &gt; 0 </span><span class="cov0" title="0">{
+                        gameScores[playerID] = bestScore
+                }</span>
+        }
+
+        <span class="cov0" title="0">var entries []model.LeaderboardEntry
+        for playerID, score := range gameScores </span><span class="cov0" title="0">{
+                if player, exists := h.storage.GetPlayers()[playerID]; exists </span><span class="cov0" title="0">{
+                        entries = append(entries, model.LeaderboardEntry{
+                                PlayerID: playerID,
+                                Username: player.Username,
+                                Score:    score,
+                        })
+                }</span>
+        }
+
+        // Sort by score (descending)
+        <span class="cov0" title="0">sort.Slice(entries, func(i, j int) bool </span><span class="cov0" title="0">{
+                return entries[i].Score &gt; entries[j].Score
+        }</span>)
+
+        // Assign ranks
+        <span class="cov0" title="0">for i := range entries </span><span class="cov0" title="0">{
+                entries[i].Rank = i + 1
+        }</span>
+
+        // Apply pagination
+        <span class="cov0" title="0">total := len(entries)
+        start := offset
+        end := offset + limit
+        if start &gt; total </span><span class="cov0" title="0">{
+                start = total
+        }</span>
+        <span class="cov0" title="0">if end &gt; total </span><span class="cov0" title="0">{
+                end = total
+        }</span>
+
+        <span class="cov0" title="0">paginatedEntries := entries[start:end]
+
+        return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
+                "leaderboard": model.Leaderboard{
+                        GameID:  gameID,
+                        Entries: paginatedEntries,
+                },
+                "total":  total,
+                "limit":  limit,
+                "offset": offset,
+        })</span>
+}</pre>
+		
+		<pre class="file" id="file5" style="display: none">package playerhdl
+
+import (
+        "coding-games/internal/model"
+        "coding-games/internal/storage"
+        "fmt"
+        "sort"
+        "strconv"
+        "time"
+
+        "github.com/gofiber/fiber/v3"
+        "github.com/google/uuid"
+)
+
+type handler struct {
+        storage storage.Storage
+}
+
+type Handler interface {
+        ListPlayers(ctx fiber.Ctx) error
+        GetPlayer(ctx fiber.Ctx) error
+        CreatePlayer(ctx fiber.Ctx) error
+        UpdatePlayer(ctx fiber.Ctx) error
+        DeletePlayer(ctx fiber.Ctx) error
+        SubmitScore(ctx fiber.Ctx) error
+        GetPlayerScores(ctx fiber.Ctx) error
+}
+
+func New(storage storage.Storage) Handler <span class="cov8" title="4">{
+        return &amp;handler{
+                storage: storage,
+        }
+}</span>
+
+func (h *handler) ListPlayers(ctx fiber.Ctx) error <span class="cov1" title="1">{
+        limitStr := ctx.Query("limit", "10")
+        offsetStr := ctx.Query("offset", "0")
+        sortBy := ctx.Query("sort", "rank") // rank, username, total_score
+
+        limit, err := strconv.Atoi(limitStr)
+        if err != nil || limit &lt;= 0 </span><span class="cov0" title="0">{
+                limit = 10
+        }</span>
+        
+        <span class="cov1" title="1">offset, err := strconv.Atoi(offsetStr)
+        if err != nil || offset &lt; 0 </span><span class="cov0" title="0">{
+                offset = 0
+        }</span>
+
+        <span class="cov1" title="1">var players []model.Player
+        for _, player := range h.storage.GetPlayers() </span><span class="cov4" title="2">{
+                players = append(players, *player)
+        }</span>
+
+        // Sort players
+        <span class="cov1" title="1">switch sortBy </span>{
+        case "username":<span class="cov0" title="0">
+                sort.Slice(players, func(i, j int) bool </span><span class="cov0" title="0">{
+                        return players[i].Username &lt; players[j].Username
+                }</span>)
+        case "total_score":<span class="cov0" title="0">
+                sort.Slice(players, func(i, j int) bool </span><span class="cov0" title="0">{
+                        return players[i].TotalScore &gt; players[j].TotalScore
+                }</span>)
+        default:<span class="cov1" title="1"> // rank
+                sort.Slice(players, func(i, j int) bool </span><span class="cov1" title="1">{
+                        return players[i].Rank &lt; players[j].Rank
+                }</span>)
+        }
+
+        // Apply pagination
+        <span class="cov1" title="1">total := len(players)
+        start := offset
+        end := offset + limit
+        if start &gt; total </span><span class="cov0" title="0">{
+                start = total
+        }</span>
+        <span class="cov1" title="1">if end &gt; total </span><span class="cov1" title="1">{
+                end = total
+        }</span>
+
+        <span class="cov1" title="1">paginatedPlayers := players[start:end]
+
+        return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
+                "players": paginatedPlayers,
+                "total":   total,
+                "limit":   limit,
+                "offset":  offset,
+        })</span>
+}
+
+func (h *handler) GetPlayer(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        playerID := ctx.Params("id")
+        if playerID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Player ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">player, exists := h.storage.GetPlayers()[playerID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Player not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov0" title="0">return ctx.Status(fiber.StatusOK).JSON(player)</span>
+}
+
+func (h *handler) CreatePlayer(ctx fiber.Ctx) error <span class="cov4" title="2">{
+        var req model.CreatePlayerRequest
+        if err := ctx.Bind().Body(&amp;req); err != nil </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Invalid request body",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Basic validation
+        <span class="cov4" title="2">if req.Username == "" || req.Email == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "validation_error",
+                        Message: "Username and email are required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov4" title="2">if len(req.Username) &lt; 3 || len(req.Username) &gt; 50 </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "validation_error",
+                        Message: "Username must be between 3 and 50 characters",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Check for duplicate username
+        <span class="cov4" title="2">for _, player := range h.storage.GetPlayers() </span><span class="cov10" title="5">{
+                if player.Username == req.Username </span><span class="cov1" title="1">{
+                        return ctx.Status(fiber.StatusConflict).JSON(model.ErrorResponse{
+                                Error:   "conflict",
+                                Message: "Username already exists",
+                                Code:    fiber.StatusConflict,
+                        })
+                }</span>
+                <span class="cov8" title="4">if player.Email == req.Email </span><span class="cov0" title="0">{
+                        return ctx.Status(fiber.StatusConflict).JSON(model.ErrorResponse{
+                                Error:   "conflict",
+                                Message: "Email already exists",
+                                Code:    fiber.StatusConflict,
+                        })
+                }</span>
+        }
+
+        <span class="cov1" title="1">playerID := uuid.New().String()
+        now := time.Now()
+        
+        player := &amp;model.Player{
+                ID:         playerID,
+                Username:   req.Username,
+                Email:      req.Email,
+                TotalScore: 0,
+                Rank:       len(h.storage.GetPlayers()) + 1, // Simple rank assignment
+                CreatedAt:  now,
+                UpdatedAt:  now,
+        }
+
+        h.storage.GetPlayers()[playerID] = player
+        h.storage.GetPlayerScores()[playerID] = []model.PlayerScore{}
+
+        return ctx.Status(fiber.StatusCreated).JSON(player)</span>
+}
+
+func (h *handler) UpdatePlayer(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        playerID := ctx.Params("id")
+        if playerID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Player ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">player, exists := h.storage.GetPlayers()[playerID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Player not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov0" title="0">var req model.UpdatePlayerRequest
+        if err := ctx.Bind().Body(&amp;req); err != nil </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Invalid request body",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        // Update fields if provided
+        <span class="cov0" title="0">if req.Username != nil </span><span class="cov0" title="0">{
+                if len(*req.Username) &lt; 3 || len(*req.Username) &gt; 50 </span><span class="cov0" title="0">{
+                        return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                                Error:   "validation_error",
+                                Message: "Username must be between 3 and 50 characters",
+                                Code:    fiber.StatusBadRequest,
+                        })
+                }</span>
+                
+                // Check for duplicate username
+                <span class="cov0" title="0">for id, p := range h.storage.GetPlayers() </span><span class="cov0" title="0">{
+                        if id != playerID &amp;&amp; p.Username == *req.Username </span><span class="cov0" title="0">{
+                                return ctx.Status(fiber.StatusConflict).JSON(model.ErrorResponse{
+                                        Error:   "conflict",
+                                        Message: "Username already exists",
+                                        Code:    fiber.StatusConflict,
+                                })
+                        }</span>
+                }
+                <span class="cov0" title="0">player.Username = *req.Username</span>
+        }
+        
+        <span class="cov0" title="0">if req.Email != nil </span><span class="cov0" title="0">{
+                // Check for duplicate email
+                for id, p := range h.storage.GetPlayers() </span><span class="cov0" title="0">{
+                        if id != playerID &amp;&amp; p.Email == *req.Email </span><span class="cov0" title="0">{
+                                return ctx.Status(fiber.StatusConflict).JSON(model.ErrorResponse{
+                                        Error:   "conflict",
+                                        Message: "Email already exists",
+                                        Code:    fiber.StatusConflict,
+                                })
+                        }</span>
+                }
+                <span class="cov0" title="0">player.Email = *req.Email</span>
+        }
+
+        <span class="cov0" title="0">player.UpdatedAt = time.Now()
+        h.storage.GetPlayers()[playerID] = player
+
+        return ctx.Status(fiber.StatusOK).JSON(player)</span>
+}
+
+func (h *handler) DeletePlayer(ctx fiber.Ctx) error <span class="cov0" title="0">{
+        playerID := ctx.Params("id")
+        if playerID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Player ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov0" title="0">_, exists := h.storage.GetPlayers()[playerID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Player not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov0" title="0">delete(h.storage.GetPlayers(), playerID)
+        delete(h.storage.GetPlayerScores(), playerID)
+
+        return ctx.Status(fiber.StatusOK).JSON(model.SuccessResponse{
+                Message: fmt.Sprintf("Player %s deleted successfully", playerID),
+        })</span>
+}
+
+func (h *handler) SubmitScore(ctx fiber.Ctx) error <span class="cov4" title="2">{
+        playerID := ctx.Params("id")
+        if playerID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Player ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov4" title="2">player, exists := h.storage.GetPlayers()[playerID]
+        if !exists </span><span class="cov1" title="1">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Player not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov1" title="1">var req model.SubmitScoreRequest
+        if err := ctx.Bind().Body(&amp;req); err != nil </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Invalid request body",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov1" title="1">if req.GameID == "" || req.Score &lt; 0 </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "validation_error",
+                        Message: "Game ID is required and score must be non-negative",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov1" title="1">now := time.Now()
+        newScore := model.PlayerScore{
+                PlayerID:  playerID,
+                GameID:    req.GameID,
+                Score:     req.Score,
+                Completed: req.Score &gt; 0, // Simple completion logic
+                CreatedAt: now,
+                UpdatedAt: now,
+        }
+
+        // Update or add score
+        playerScores := h.storage.GetPlayerScores()[playerID]
+        found := false
+        for i, score := range playerScores </span><span class="cov1" title="1">{
+                if score.GameID == req.GameID </span><span class="cov1" title="1">{
+                        // Update existing score if new score is higher
+                        if req.Score &gt; score.Score </span><span class="cov1" title="1">{
+                                playerScores[i] = newScore
+                                found = true
+                        }</span>
+                        <span class="cov1" title="1">break</span>
+                }
+        }
+        
+        <span class="cov1" title="1">if !found </span><span class="cov0" title="0">{
+                playerScores = append(playerScores, newScore)
+        }</span>
+        
+        <span class="cov1" title="1">h.storage.GetPlayerScores()[playerID] = playerScores
+
+        // Recalculate total score
+        totalScore := 0
+        for _, score := range playerScores </span><span class="cov4" title="2">{
+                totalScore += score.Score
+        }</span>
+        <span class="cov1" title="1">player.TotalScore = totalScore
+        player.UpdatedAt = now
+        h.storage.GetPlayers()[playerID] = player
+
+        return ctx.Status(fiber.StatusOK).JSON(model.SuccessResponse{
+                Message: "Score submitted successfully",
+                Data:    newScore,
+        })</span>
+}
+
+func (h *handler) GetPlayerScores(ctx fiber.Ctx) error <span class="cov1" title="1">{
+        playerID := ctx.Params("id")
+        if playerID == "" </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusBadRequest).JSON(model.ErrorResponse{
+                        Error:   "invalid_request",
+                        Message: "Player ID is required",
+                        Code:    fiber.StatusBadRequest,
+                })
+        }</span>
+
+        <span class="cov1" title="1">_, exists := h.storage.GetPlayers()[playerID]
+        if !exists </span><span class="cov0" title="0">{
+                return ctx.Status(fiber.StatusNotFound).JSON(model.ErrorResponse{
+                        Error:   "not_found",
+                        Message: "Player not found",
+                        Code:    fiber.StatusNotFound,
+                })
+        }</span>
+
+        <span class="cov1" title="1">scores, exists := h.storage.GetPlayerScores()[playerID]
+        if !exists </span><span class="cov0" title="0">{
+                scores = []model.PlayerScore{}
+        }</span>
+
+        <span class="cov1" title="1">return ctx.Status(fiber.StatusOK).JSON(fiber.Map{
+                "player_id": playerID,
+                "scores":    scores,
+                "total":     len(scores),
+        })</span>
+}</pre>
+		
+		<pre class="file" id="file6" style="display: none">package storage
+
+import (
+        "coding-games/internal/model"
+        "time"
+)
+
+// InMemoryStorage represents an in-memory storage for the example API
+type InMemoryStorage struct {
+        players map[string]*model.Player
+        scores  map[string][]model.PlayerScore
+        games   map[string]*model.Game
+}
+
+type Storage interface {
+        // Game methods
+        GetGames() map[string]*model.Game
+        
+        // Player methods
+        GetPlayers() map[string]*model.Player
+        GetPlayerScores() map[string][]model.PlayerScore
+}
+
+func NewInMemoryStorage() Storage <span class="cov0" title="0">{
+        // Initialize with sample data
+        games := map[string]*model.Game{
+                "1": {
+                        ID:          "1",
+                        Title:       "Two Sum",
+                        Description: "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.",
+                        Difficulty:  "easy",
+                        Language:    "go",
+                        MaxScore:    100,
+                        CreatedAt:   time.Now().Add(-24 * time.Hour),
+                        UpdatedAt:   time.Now().Add(-24 * time.Hour),
+                },
+                "2": {
+                        ID:          "2",
+                        Title:       "Binary Tree Traversal",
+                        Description: "Implement inorder, preorder, and postorder traversal of a binary tree.",
+                        Difficulty:  "medium",
+                        Language:    "python",
+                        MaxScore:    200,
+                        CreatedAt:   time.Now().Add(-12 * time.Hour),
+                        UpdatedAt:   time.Now().Add(-12 * time.Hour),
+                },
+        }
+
+        players := map[string]*model.Player{
+                "1": {
+                        ID:         "1",
+                        Username:   "alice_coder",
+                        Email:      "alice@example.com",
+                        TotalScore: 250,
+                        Rank:       1,
+                        CreatedAt:  time.Now().Add(-72 * time.Hour),
+                        UpdatedAt:  time.Now().Add(-1 * time.Hour),
+                },
+                "2": {
+                        ID:         "2",
+                        Username:   "bob_dev",
+                        Email:      "bob@example.com",
+                        TotalScore: 180,
+                        Rank:       2,
+                        CreatedAt:  time.Now().Add(-48 * time.Hour),
+                        UpdatedAt:  time.Now().Add(-2 * time.Hour),
+                },
+        }
+
+        scores := map[string][]model.PlayerScore{
+                "1": {
+                        {
+                                PlayerID:  "1",
+                                GameID:    "1",
+                                Score:     100,
+                                Completed: true,
+                                CreatedAt: time.Now().Add(-24 * time.Hour),
+                                UpdatedAt: time.Now().Add(-24 * time.Hour),
+                        },
+                        {
+                                PlayerID:  "1",
+                                GameID:    "2",
+                                Score:     150,
+                                Completed: true,
+                                CreatedAt: time.Now().Add(-12 * time.Hour),
+                                UpdatedAt: time.Now().Add(-12 * time.Hour),
+                        },
+                },
+                "2": {
+                        {
+                                PlayerID:  "2",
+                                GameID:    "1",
+                                Score:     80,
+                                Completed: true,
+                                CreatedAt: time.Now().Add(-20 * time.Hour),
+                                UpdatedAt: time.Now().Add(-20 * time.Hour),
+                        },
+                        {
+                                PlayerID:  "2",
+                                GameID:    "2",
+                                Score:     100,
+                                Completed: false,
+                                CreatedAt: time.Now().Add(-6 * time.Hour),
+                                UpdatedAt: time.Now().Add(-6 * time.Hour),
+                        },
+                },
+        }
+
+        return &amp;InMemoryStorage{
+                games:   games,
+                players: players,
+                scores:  scores,
+        }
+}</span>
+
+func (s *InMemoryStorage) GetGames() map[string]*model.Game <span class="cov0" title="0">{
+        return s.games
+}</span>
+
+func (s *InMemoryStorage) GetPlayers() map[string]*model.Player <span class="cov0" title="0">{
+        return s.players
+}</span>
+
+func (s *InMemoryStorage) GetPlayerScores() map[string][]model.PlayerScore <span class="cov0" title="0">{
+        return s.scores
+}</pre>
 		
 		</div>
 	</body>

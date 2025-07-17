@@ -10,6 +10,9 @@ import (
 	"coding-games/config"
 	"coding-games/infrastructure/server"
 	"coding-games/internal/handler/gamehdl"
+	"coding-games/internal/handler/leaderboardhdl"
+	"coding-games/internal/handler/playerhdl"
+	"coding-games/internal/storage"
 	"github.com/gofiber/fiber/v3"
 	"log"
 )
@@ -17,8 +20,11 @@ import (
 // Injectors from main.go:
 
 func initialize() *dependencies {
-	handler := gamehdl.New()
-	app := server.New(handler)
+	storageStorage := storage.NewInMemoryStorage()
+	handler := gamehdl.New(storageStorage)
+	playerhdlHandler := playerhdl.New(storageStorage)
+	leaderboardhdlHandler := leaderboardhdl.New(storageStorage)
+	app := server.New(handler, playerhdlHandler, leaderboardhdlHandler)
 	mainDependencies := &dependencies{
 		server: app,
 	}
