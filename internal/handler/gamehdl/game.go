@@ -53,9 +53,7 @@ func (h *handler) Game(ctx fiber.Ctx) error {
 
 	// Example handler logic
 	// This could be replaced with actual game logic
-	return ctx.JSON(fiber.Map{
-		"response": decisions,
-	})
+	return ctx.JSON(decisions)
 }
 
 func game1(hands [][]Card) []string {
