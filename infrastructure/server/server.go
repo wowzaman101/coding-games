@@ -15,7 +15,7 @@ func New(gh gamehdl.Handler) *fiber.App {
 	})
 
 	// Game handler route
-	app.Post("/game", gh.Test)
+	app.Post("/game", gh.Game)
 
 	return app
 }
